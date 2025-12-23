@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.redis.queue import RedisQueue
-from app.core.config import settings
+from app import RedisQueue
+from app import settings
 
 router = APIRouter()
 queue = RedisQueue(url=settings.redis_url)

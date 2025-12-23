@@ -18,6 +18,26 @@ This repo is a PR-ready scaffold (first iteration). It includes:
 - Docker Compose to run API + worker + Redis locally
 - GitHub Actions CI to run tests & lint
 
+## Domain-Level Rate Limiting
+The crawler includes a distributed, Redis-backed token-bucket rate limiter.
+Each domain receives:
+- Configurable token capacity
+- Refill rate per second
+- Isolation across workers
+
+This prevents overloading external websites, ensures ethical crawling,
+and allows safe horizontal autoscaling.
+
+### Robots.txt compliance
+The crawler includes a distributed RobotsManager that:
+- Fetches robots.txt asynchronously per domain
+- Caches robots rules in Redis (TTL configurable)
+- Enforces Allow/Disallow and honors Crawl-delay
+- Integrates with the rate limiter so crawl-delay reduces per-domain request rate
+
+This ensures ethical crawling and prevents accidental overload of target sites.
+
+
 ## Quickstart (local via Docker Compose)
 1. Copy `.env.example` -> `.env` and edit if needed.
 2. Start services:
@@ -59,6 +79,7 @@ async-distributed-crawler/
 ├─ .github/workflows/ci.yml
 ├─ README.md
 ```
+
 
 ## Notes, edge cases & trade-offs
 - This scaffold favors clarity and testability. It uses Redis for coordination (queues + visited sets).

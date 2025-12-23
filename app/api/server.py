@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api.routes.crawl import router as crawl_router
+from app import router as crawl_router
 
 
 def init_routes(app: FastAPI):
