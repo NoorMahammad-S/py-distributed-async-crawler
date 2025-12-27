@@ -37,6 +37,23 @@ The crawler includes a distributed RobotsManager that:
 
 This ensures ethical crawling and prevents accidental overload of target sites.
 
+## Job Tracking & Progress Reporting
+
+When a job is submitted, the system creates a Job record (Redis-backed) that exposes the following fields via `GET /status?job_id=<id>`:
+
+- `job_id` — UUID assigned at submission
+- `created_at` — epoch seconds when job was created
+- `started_at` — epoch seconds when a worker started processing the job (0 if not started)
+- `finished_at` — epoch seconds when job finished (0 if running)
+- `runtime_seconds` — seconds since start (or total run time if finished)
+- `total_queued` — total number of URLs queued for the job (initial + discovered)
+- `pending` — number of URLs waiting for processing
+- `in_progress` — number of URLs currently being fetched
+- `completed` — number of URLs successfully processed
+- `failed` — number of URLs failed
+
+This model supports distributed workers updating counters concurrently and provides a single authoritative view of job progress.
+
 
 ## Quickstart (local via Docker Compose)
 1. Copy `.env.example` -> `.env` and edit if needed.
