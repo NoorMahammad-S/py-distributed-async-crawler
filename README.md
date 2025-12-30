@@ -76,19 +76,38 @@ async-distributed-crawler/
 ├─ app/
 │  ├─ main.py
 │  ├─ api/
-│  │  └─ routes.py
+│  │  ├─ routes
+│  │  │  └─ routes.py
+│  │  └─ server.py
+│  ├─ config/
+│  │  └─ settings.py
 │  ├─ crawler/
 │  │  ├─ engine.py
+│  │  └─ fetcher.py
+│  │  └─ parser.py
 │  │  └─ worker.py
 │  ├─ core/
-│  │  └─ config.py
+│  │  ├─ config.py
+│  │  └─ logging_config.py
+│  ├─ observability/
+│  │  ├─ logger.py
+│  │  └─ metrics.py
+│  ├─ rate_limiter/
+│  │  ├─ llimiter.py
+│  │  └─ utils.py
+│  ├─ robots/
+│  │  ├─ __init__.py
+│  │  └─ manager.py
 │  ├─ services/
+│  │  ├─ job_store.py
 │  │  └─ queue.py
 │  ├─ models/
 │  │  └─ schemas.py
 │  └─ logging_config.py
 ├─ tests/
-│  └─ test_api.py
+│  ├─ test_api.py
+│  └─ test_job_tracking.py
+│  └─ test_robots.py
 ├─ docker/
 │  └─ Dockerfile
 ├─ docker-compose.yml
