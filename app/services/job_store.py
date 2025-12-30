@@ -10,6 +10,7 @@ All methods are async and safe to call from multiple workers.
 """
 from __future__ import annotations
 
+
 from typing import Optional, Dict, Any
 import time
 import json
@@ -21,8 +22,9 @@ logger = logging.getLogger("jobstore")
 
 
 class JobStore:
-    def __init__(self, redis_url: str):
+    def __init__(self, redis_url: str, metrics: Optional[MetricsManager] = None):
         self.redis = aioredis.from_url(redis_url, decode_responses=True)
+        self.metrics = metrics
 
     def _meta_key(self, job_id: str) -> str:
         return f"job:{job_id}:meta"
@@ -56,21 +58,47 @@ class JobStore:
             await self.redis.expire(meta_key, ttl_seconds)
             await self.redis.expire(counters_key, ttl_seconds)
 
+        # Emit structured event and metric
+        json_event("job.created", job_id, {"total_queued": start_urls_count})
+
+        if self.metrics:
+            await self.metrics.incr_job_started(0)  # ensure key exists; started will be incremented when worker starts
+
     async def mark_started(self, job_id: str) -> None:
         now = int(time.time())
         await self.redis.hset(self._meta_key(job_id), "started_at", now)
+        json_event("job.started", job_id, {"started_at": now})
+        if self.metrics:
+            await self.metrics.incr_job_started(1)
 
     async def mark_finished(self, job_id: str) -> None:
         now = int(time.time())
         await self.redis.hset(self._meta_key(job_id), "finished_at", now)
 
+        json_event("job.finished", job_id, {"finished_at": now})
+        # compute runtime and observe metric
+        meta = await self.redis.hgetall(self._meta_key(job_id))
+        try:
+            started = int(meta.get("started_at") or 0)
+            if started:
+                runtime = now - started
+            else:
+                runtime = 0
+        except Exception:
+            runtime = 0
+        if self.metrics:
+            await self.metrics.incr_job_completed(runtime, n=1)
+
+
     # Counter operations
     async def incr_pending(self, job_id: str, n: int = 1) -> None:
         await self.redis.hincrby(self._counters_key(job_id), "pending", n)
         await self.redis.hincrby(self._counters_key(job_id), "total_queued", n)
+        json_event("job.url.pending", job_id, {"delta": n})
 
     async def decr_pending(self, job_id: str, n: int = 1) -> None:
         await self.redis.hincrby(self._counters_key(job_id), "pending", -n)
+        json_event("job.url.taken", job_id, {"delta": n})
 
     async def incr_in_progress(self, job_id: str, n: int = 1) -> None:
         await self.redis.hincrby(self._counters_key(job_id), "in_progress", n)
@@ -80,9 +108,15 @@ class JobStore:
 
     async def incr_completed(self, job_id: str, n: int = 1) -> None:
         await self.redis.hincrby(self._counters_key(job_id), "completed", n)
+        json_event("job.url.completed", job_id, {"count": n})
+        if self.metrics:
+            await self.metrics.incr_url_processed(n)
 
     async def incr_failed(self, job_id: str, n: int = 1) -> None:
         await self.redis.hincrby(self._counters_key(job_id), "failed", n)
+        json_event("job.url.failed", job_id, {"count": n})
+        if self.metrics:
+            await self.metrics.incr_url_failed(n)
 
     async def get_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Return aggregated job status or None if job not found."""
