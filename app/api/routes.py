@@ -30,6 +30,27 @@ class StatusResponse(BaseModel):
     completed: int
     failed: int
 
+class JobSummary(BaseModel):
+    job_id: str
+    created_at: int
+    started_at: int
+    finished_at: int
+    runtime_seconds: int
+    total_queued: int
+    pending: int
+    in_progress: int
+    completed: int
+    failed: int
+    status: str
+
+
+class JobsListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: List[JobSummary]
+
+
 @router.post("/crawl", response_model=CrawlResponse)
 async def submit_crawl(req: CrawlRequest):
     job_id = str(uuid.uuid4())
@@ -56,3 +77,15 @@ async def get_status(job_id: str = Query(...)):
     if stat is None:
         raise HTTPException(status_code=404, detail="job not found")
     return StatusResponse(**stat)
+
+@router.get("/jobs", response_model=JobsListResponse)
+async def list_jobs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    status: Optional[str] = Query(None, description="Filter by status: pending,in-progress,completed,failed,queued"),
+):
+    job_store = JobStore(settings.REDIS_URL)
+    res = await job_store.list_jobs(page=page, page_size=page_size, status=status)
+    await job_store.close()
+    return JobsListResponse(**res)
+

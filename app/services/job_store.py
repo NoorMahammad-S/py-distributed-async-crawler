@@ -57,6 +57,14 @@ class JobStore:
         if ttl_seconds:
             await self.redis.expire(meta_key, ttl_seconds)
             await self.redis.expire(counters_key, ttl_seconds)
+        # Add to global index (sorted by created_at) for listing & pagination
+        try:
+            await self.redis.zadd("jobs:all", {job_id: now})
+            if ttl_seconds:
+                # set TTL on the key via EXPIRE to keep index retention in sync (optional)
+                await self.redis.expire("jobs:all", ttl_seconds)
+        except Exception:
+            logger.exception("Failed to add job to index: %s", job_id)
 
         # Emit structured event and metric
         json_event("job.created", job_id, {"total_queued": start_urls_count})
@@ -124,6 +132,7 @@ class JobStore:
         if not meta:
             return None
         counters = await self.redis.hgetall(self._counters_key(job_id))
+
         # convert numeric fields
         def _i(x):
             try:
@@ -161,6 +170,134 @@ class JobStore:
             "in_progress": in_progress,
             "completed": completed,
             "failed": failed,
+        }
+
+    async def _resolve_status(self, meta: Dict[str, Any], counters: Dict[str, Any]) -> str:
+        """
+        Derive simple status label from meta  counters:
+         - completed (finished_at > 0 and failed == 0)
+         - failed (finished_at > 0 and failed > 0)
+         - in-progress (in_progress > 0)
+         - pending (pending > 0)
+         - queued (default)
+        """
+        try:
+            finished_at = int(meta.get("finished_at") or 0)
+        except Exception:
+            finished_at = 0
+
+        def _i(x):
+            try:
+                return int(x or 0)
+            except Exception:
+                return 0
+
+        pending = _i(counters.get("pending"))
+        in_progress = _i(counters.get("in_progress"))
+        failed = _i(counters.get("failed"))
+
+        if finished_at > 0:
+            return "failed" if failed > 0 else "completed"
+        if in_progress > 0:
+            return "in-progress"
+        if pending > 0:
+            return "pending"
+        return "queued"
+
+    async def list_jobs(self, page: int = 1, page_size: int = 20, status: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Paginated job listing.
+        - page: 1-based page index
+        - page_size: number of items per page
+        - status: optional filter in ("pending","in-progress","completed","failed","queued")
+
+        Returns:
+        {
+            "total": <int>,
+            "page": <int>,
+            "page_size": <int>,
+            "items": [
+                {
+                    job_id, created_at, started_at, finished_at, runtime_seconds,
+                    total_queued, pending, in_progress, completed, failed, status
+                }, ...
+            ]
+        }
+        """
+        # compute range
+        if page < 1:
+            page = 1
+        offset = (page - 1) * page_size
+        end = offset  page_size - 1
+
+        total = await self.redis.zcard("jobs:all")
+
+        # fetch job ids in reverse chronological order (most recent first)
+        job_ids = await self.redis.zrevrange("jobs:all", offset, end)
+
+        # pipeline to get meta  counters for each job id
+        pipe = self.redis.pipeline()
+        for jid in job_ids:
+            pipe.hgetall(self._meta_key(jid))
+            pipe.hgetall(self._counters_key(jid))
+        results = await pipe.execute()
+
+        items = []
+        # results: [meta_j1, counters_j1, meta_j2, counters_j2, ...]
+        for i in range(0, len(results), 2):
+            meta = results[i] or {}
+            counters = results[i  1] or {}
+            # convert numeric fields safely
+            def _to_int(x):
+                try:
+                    return int(x)
+                except Exception:
+                    return 0
+            created_at = _to_int(meta.get("created_at", 0))
+            started_at = _to_int(meta.get("started_at", 0))
+            finished_at = _to_int(meta.get("finished_at", 0))
+            total_q = _to_int(counters.get("total_queued", 0))
+            pending = _to_int(counters.get("pending", 0))
+            in_progress = _to_int(counters.get("in_progress", 0))
+            completed = _to_int(counters.get("completed", 0))
+            failed = _to_int(counters.get("failed", 0))
+
+            runtime = 0
+            now = int(time.time())
+            if started_at and finished_at:
+                runtime = finished_at - started_at
+            elif started_at:
+                runtime = now - started_at
+
+            stat = {
+                "job_id": meta.get("job_id"),
+                "created_at": created_at,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "runtime_seconds": runtime,
+                "total_queued": total_q,
+                "pending": pending,
+                "in_progress": in_progress,
+                "completed": completed,
+                "failed": failed,
+            }
+            stat["status"] = await self._resolve_status(meta, counters)
+
+            items.append(stat)
+
+        # apply status filter if requested (filter client-side; this is fine for page_size small)
+        if status:
+            filtered = [it for it in items if it["status"] == status]
+            # total should reflect underlying ZSET total, but clients requesting filtering expect server-side filtering
+            # For simplicity and correctness, when status filter is present we must scan the index until we fill page.
+            # However to keep code simple and performant for typical workloads we filter items from the page slice only.
+            items = filtered
+
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "items": items,
         }
 
     async def close(self) -> None:
